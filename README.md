@@ -23,19 +23,13 @@ Primary support is Debian and Ubuntu; other Linux distributions are best-effort.
 ## Usage
 
 ```bash
-./script.sh [optional-report-name-prefix]
-```
-
-Example:
-
-```bash
-./script.sh servername
+./script.sh
 ```
 
 This creates a report file like:
 
 ```
-servername-audit-YYYYMMDD_HHMMSS.txt
+hostname-audit-YYYYMMDD_HHMMSS.txt
 ```
 
 ## Notes

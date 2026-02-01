@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 
 # Lightweight VPS audit that runs without root, prints a colorized local log and writes a plain-text report.
-# Usage: ./script.sh [optional-report-name-prefix]
+# Usage: ./script.sh
 
 set -o pipefail
 
-PREFIX="${1:-vps}"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-REPORT_FILE="${PREFIX}-audit-${TIMESTAMP}.txt"
+HOSTNAME_SHORT=$(hostname -s 2>/dev/null || hostname)
+REPORT_FILE="${HOSTNAME_SHORT}-audit-${TIMESTAMP}.txt"
 
 # Colors
 GREEN='\033[0;32m'
@@ -33,13 +33,16 @@ print_info() {
   write_report "$k: $v"
 }
 check_security() {
-  local name="$1"; local status="$2"; local msg="$3"
+  local name="$1"; local status="$2"; local msg="$3"; local fix="${4:-}"
   case "$status" in
     PASS) color="$GREEN" tag="[PASS]" ;;
     WARN) color="$YELLOW" tag="[WARN]" ;;
     FAIL) color="$RED" tag="[FAIL]" ;;
     *) color="$GRAY" tag="[INFO]" ;;
   esac
+  if [[ ( "$status" == "WARN" || "$status" == "FAIL" ) && -n "$fix" ]]; then
+    msg="$msg | Fix: $fix"
+  fi
   echo -e "${color}${tag}${NC} $name ${GRAY}- $msg${NC}"
   write_report "${tag} $name - $msg"
 }
@@ -105,46 +108,48 @@ SSHD_PORT=${SSHD_PORT:-22}
 if [[ "$SSHD_ROOT" == "no" ]]; then
   check_security "SSH Root Login" "PASS" "Root login disabled"
 else
-  check_security "SSH Root Login" "WARN" "Root login allowed or not explicitly disabled (value: $SSHD_ROOT)"
+  check_security "SSH Root Login" "WARN" "Root login allowed or not explicitly disabled (value: $SSHD_ROOT)" "Set PermitRootLogin no in sshd_config and restart sshd"
 fi
 if [[ "$SSHD_PASS" == "no" ]]; then
   check_security "SSH Password Auth" "PASS" "Password auth disabled"
 else
-  check_security "SSH Password Auth" "WARN" "Password auth enabled (value: $SSHD_PASS)"
+  check_security "SSH Password Auth" "WARN" "Password auth enabled (value: $SSHD_PASS)" "Set PasswordAuthentication no and use SSH keys"
 fi
 if [[ "$SSHD_PORT" == "22" ]]; then
-  check_security "SSH Port" "WARN" "Default port 22 in use"
+  check_security "SSH Port" "WARN" "Default port 22 in use" "Change Port to a non-default value and update firewall/clients"
 else
   check_security "SSH Port" "PASS" "Non-default SSH port $SSHD_PORT"
 fi
 
 # Firewall
 if cmd_exists ufw; then
-  if ufw status | grep -qi active; then
+  if ufw status 2>/dev/null | grep -qi active; then
     check_security "Firewall (ufw)" "PASS" "UFW active"
+  elif ufw status 2>/dev/null | grep -qi inactive; then
+    check_security "Firewall (ufw)" "WARN" "UFW installed but not active" "Enable ufw and allow required ports"
   else
-    check_security "Firewall (ufw)" "WARN" "UFW installed but not active"
+    check_security "Firewall (ufw)" "WARN" "UFW status not readable without privileges" "Run with sudo or check firewall status manually"
   fi
 elif cmd_exists firewall-cmd; then
   if firewall-cmd --state 2>/dev/null | grep -qi running; then
     check_security "Firewall (firewalld)" "PASS" "Firewalld running"
   else
-    check_security "Firewall (firewalld)" "WARN" "Firewalld present but not running"
+    check_security "Firewall (firewalld)" "WARN" "Firewalld present but not running" "Enable firewalld and open required ports"
   fi
 elif cmd_exists nft; then
   if nft list ruleset 2>/dev/null | grep -q table; then
     check_security "Firewall (nftables)" "PASS" "nftables rules present"
   else
-    check_security "Firewall (nftables)" "WARN" "nftables present but no rules detected"
+    check_security "Firewall (nftables)" "WARN" "nftables present but no rules detected" "Add nftables rules for required services"
   fi
 elif cmd_exists iptables; then
   if iptables -L -n 2>/dev/null | grep -q "Chain INPUT"; then
     check_security "Firewall (iptables)" "PASS" "iptables rules detected"
   else
-    check_security "Firewall (iptables)" "WARN" "iptables present but no rules detected or permission limited"
+    check_security "Firewall (iptables)" "WARN" "iptables present but no rules detected or permission limited" "Add iptables rules or check with sudo"
   fi
 else
-  check_security "Firewall" "WARN" "No firewall tool detected"
+  check_security "Firewall" "WARN" "No firewall tool detected" "Install ufw/firewalld/nftables and configure rules"
 fi
 
 # Intrusion Prevention (best-effort without root)
@@ -152,12 +157,12 @@ if cmd_exists fail2ban-client; then
   if fail2ban-client ping >/dev/null 2>&1; then
     check_security "Intrusion Prevention" "PASS" "Fail2ban running"
   else
-    check_security "Intrusion Prevention" "WARN" "Fail2ban detected but not responding"
+    check_security "Intrusion Prevention" "WARN" "Fail2ban detected but not responding" "Start/restart fail2ban and verify jails"
   fi
 elif cmd_exists cscli; then
   check_security "Intrusion Prevention" "PASS" "CrowdSec tools detected"
 else
-  check_security "Intrusion Prevention" "FAIL" "No Fail2ban/CrowdSec detected"
+  check_security "Intrusion Prevention" "FAIL" "No Fail2ban/CrowdSec detected" "Install and enable fail2ban or CrowdSec"
 fi
 
 # Logs: failed auth attempts (best-effort; may be permission-limited)
@@ -169,12 +174,15 @@ elif cmd_exists journalctl; then
 else
   AUTH_FAILED=0
 fi
+AUTH_FAILED=$(printf '%s' "$AUTH_FAILED" | tr -dc '0-9')
+AUTH_FAILED=${AUTH_FAILED##+(0)}
+AUTH_FAILED=${AUTH_FAILED:-0}
 if (( AUTH_FAILED < 10 )); then
   check_security "Failed Logins" "PASS" "$AUTH_FAILED failed attempts in logs"
 elif (( AUTH_FAILED < 50 )); then
-  check_security "Failed Logins" "WARN" "$AUTH_FAILED failed attempts in logs"
+  check_security "Failed Logins" "WARN" "$AUTH_FAILED failed attempts in logs" "Review auth logs and consider fail2ban"
 else
-  check_security "Failed Logins" "FAIL" "$AUTH_FAILED failed attempts in logs"
+  check_security "Failed Logins" "FAIL" "$AUTH_FAILED failed attempts in logs" "Investigate brute force attempts and harden SSH"
 fi
 
 # Updates (non-root, best-effort)
@@ -189,7 +197,7 @@ fi
 if [ "$UPDATES_N" -eq 0 ]; then
   check_security "System Updates" "PASS" "No upgradable packages detected (or not checkable without root)"
 else
-  check_security "System Updates" "WARN" "$UPDATES_N packages upgradable"
+  check_security "System Updates" "WARN" "$UPDATES_N packages upgradable" "Apply security updates via apt/dnf/yum"
 fi
 
 # Disk usage
@@ -199,9 +207,9 @@ ROOT_USAGE_NUM=${ROOT_USAGE//[^0-9]/}
 if [ "$ROOT_USAGE_NUM" -lt 50 ]; then
   check_security "Disk Usage" "PASS" "Root usage ${ROOT_USAGE}%"
 elif [ "$ROOT_USAGE_NUM" -lt 80 ]; then
-  check_security "Disk Usage" "WARN" "Root usage ${ROOT_USAGE}%"
+  check_security "Disk Usage" "WARN" "Root usage ${ROOT_USAGE}%" "Clean logs, remove unused data, or expand disk"
 else
-  check_security "Disk Usage" "FAIL" "Root usage ${ROOT_USAGE}%"
+  check_security "Disk Usage" "FAIL" "Root usage ${ROOT_USAGE}%" "Free disk space urgently or expand volume"
 fi
 
 # Memory
@@ -210,18 +218,22 @@ if [ -z "$MEM_USAGE" ]; then MEM_USAGE=0; fi
 if [ "$MEM_USAGE" -lt 50 ]; then
   check_security "Memory Usage" "PASS" "${MEM_USAGE}% used"
 elif [ "$MEM_USAGE" -lt 80 ]; then
-  check_security "Memory Usage" "WARN" "${MEM_USAGE}% used"
+  check_security "Memory Usage" "WARN" "${MEM_USAGE}% used" "Check top memory consumers or add swap"
 else
-  check_security "Memory Usage" "FAIL" "${MEM_USAGE}% used"
+  check_security "Memory Usage" "FAIL" "${MEM_USAGE}% used" "Reduce memory usage or increase RAM/swap"
 fi
 
 # CPU load
 CPU_LOAD1=$(uptime 2>/dev/null | awk -F'load average:' '{print $2}' | cut -d',' -f1 | xargs)
-if [[ -n "$CPU_LOAD1" && $(echo "$CPU_LOAD1 < $CPU_CORES" | bc -l 2>/dev/null) -eq 1 2>/dev/null ]]; then
+CPU_OK=1
+if [ -n "$CPU_LOAD1" ]; then
+  CPU_OK=$(awk -v l1="$CPU_LOAD1" -v cores="$CPU_CORES" 'BEGIN {print (l1 < cores) ? 1 : 0}' 2>/dev/null)
+fi
+if [[ -n "$CPU_LOAD1" && "$CPU_OK" -eq 1 ]]; then
   check_security "CPU Load" "PASS" "1m load: $CPU_LOAD1"
 else
   # best-effort judgement
-  check_security "CPU Load" "WARN" "1m load: $CPU_LOAD1"
+  check_security "CPU Load" "WARN" "1m load: $CPU_LOAD1" "Inspect CPU usage and reduce load"
 fi
 
 # Ports (using ss or netstat)
@@ -233,9 +245,9 @@ elif cmd_exists netstat; then
 fi
 if [ -n "$LISTEN_PORTS" ]; then
   PORT_COUNT=$(echo "$LISTEN_PORTS" | tr ',' '\n' | wc -l)
-  check_security "Open Ports" "WARN" "Ports: $LISTEN_PORTS (count: $PORT_COUNT)"
+  check_security "Open Ports" "WARN" "Ports: $LISTEN_PORTS (count: $PORT_COUNT)" "Close unused ports and review exposed services"
 else
-  check_security "Open Ports" "WARN" "Unable to determine listening ports"
+  check_security "Open Ports" "WARN" "Unable to determine listening ports" "Install ss/netstat or run with sufficient permissions"
 fi
 
 # SUID checks (limited by permissions)
@@ -243,9 +255,9 @@ SUID_COUNT=$(find /usr/bin /bin /sbin /usr/sbin -xdev -type f -perm -4000 2>/dev
 if [ "$SUID_COUNT" -eq 0 ]; then
   check_security "SUID Files" "PASS" "No unusual SUID files found in common paths"
 elif [ "$SUID_COUNT" -lt 10 ]; then
-  check_security "SUID Files" "WARN" "Found $SUID_COUNT SUID files in common paths"
+  check_security "SUID Files" "WARN" "Found $SUID_COUNT SUID files in common paths" "Audit SUID files and remove unnecessary ones"
 else
-  check_security "SUID Files" "FAIL" "Found $SUID_COUNT SUID files — review"
+  check_security "SUID Files" "FAIL" "Found $SUID_COUNT SUID files — review" "Audit SUID files and remove unnecessary ones"
 fi
 
 # Summary
