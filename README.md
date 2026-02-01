@@ -1,16 +1,44 @@
 # linux-server-audit
 
-A lightweight audit script for Debian and Ubuntu servers.
+Lightweight VPS audit script that runs without root. It prints a colorized local log and writes a plain-text report.
+Primary support is Debian and Ubuntu; other Linux distributions are best-effort.
 
-The script collects basic system information and reports:
-- Operating system and kernel details
-- Uptime and load average
-- Disk and memory usage
-- Pending system updates
-- Pending security updates
-- Whether a system reboot is required
+## What it checks
+
+- System info: OS, kernel, uptime, load, CPU, memory, disk
+- Optional public IP (if `curl` is available)
+- SSH configuration: root login, password auth, port
+- Firewall status (ufw, firewalld, nftables, iptables)
+- Intrusion prevention (Fail2ban or CrowdSec)
+- Failed SSH logins (best-effort)
+- Pending updates (best-effort, no root)
+- Disk, memory, CPU load, open ports
+- SUID binaries count in common system paths
+
+## Requirements
+
+- Bash
+- Standard Linux userland tools (the script will skip checks if tools are missing)
 
 ## Usage
 
 ```bash
-sudo ./script.sh servername
+./script.sh [optional-report-name-prefix]
+```
+
+Example:
+
+```bash
+./script.sh servername
+```
+
+This creates a report file like:
+
+```
+servername-audit-YYYYMMDD_HHMMSS.txt
+```
+
+## Notes
+
+- The script is best-effort and avoids requiring root.
+- Some checks depend on tool availability and log access permissions.
