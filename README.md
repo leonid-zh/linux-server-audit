@@ -1,5 +1,13 @@
 # linux-server-audit
 
+[![Bash](https://img.shields.io/badge/Bash-5.0%2B-121011?logo=gnu-bash&logoColor=white)](https://www.gnu.org/software/bash/)
+[![Platform](https://img.shields.io/badge/Platform-Linux-2ea44f?logo=linux&logoColor=white)](https://kernel.org/)
+[![License: GPLv3 (Free)](https://img.shields.io/badge/License-GPLv3%20Free%20Software-blue.svg)](LICENSE)
+
+## Preview
+
+![linux-server-audit preview](preview.png)
+
 Lightweight VPS audit script that runs without root. It prints a colorized local log and writes a plain-text report.
 Primary support is Debian and Ubuntu; other Linux distributions are best-effort.
 
